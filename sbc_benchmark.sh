@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sbc_benchmark.sh — Automated SBC benchmark script
+# sbc_benchmark.sh ? Automated SBC benchmark script
 set -euo pipefail
 
 LOG_DIR="${HOME}/sbc_benchmark"
@@ -45,10 +45,10 @@ stress-ng --cpu 0 --cpu-method all --timeout 5m --verbose 2>&1 \
   | tee "${LOG_DIR}/stress-ng.log"
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') stress-ng completed ==="
 
-# 5. Ping 8.8.8.8 for 120 minutes
+# 5. Ping 8.8.8.8 every 5 seconds for 120 minutes
 echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Pinging 8.8.8.8 for 120 minutes ==="
-ping -w 7200 8.8.8.8 2>&1 | tee "${LOG_DIR}/ping.log"
+echo "=== $(date '+%Y-%m-%d %H:%M:%S') Pinging 8.8.8.8 every 5s for 120 minutes ==="
+ping -i 5 -w 7200 8.8.8.8 2>&1 | tee "${LOG_DIR}/ping.log"
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') ping test completed ==="
 
 # 6. Capture system info with fastfetch
