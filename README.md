@@ -2,9 +2,9 @@
 
 > Automated SBC test script for Debian-based ARM single-board computers
 
-`sbc_test.sh` will:
+`SBC_Test.sh` will:
 
-- Create (or clean) a `~/sbc_test` directory  
+- Create (or clean) a `Logs` directory next to the script  
 - Run `sudo apt update` & `sudo apt full-upgrade -y`, logging output to `updates.log`  
 - Download & install the **latest** ARM64 `fastfetch` `.deb` from GitHub releases  
 - Ensure **stress-ng** is installed  
@@ -12,14 +12,16 @@
 - Ping `8.8.8.8` **every 10 seconds for 30 minutes** (logs to `ping.log`)  
 - Capture a snapshot of system info with `fastfetch` (logs to `fastfetch.log`)
 
-All steps echo progress to the console and save detailed logs under `~/sbc_test`.
+All steps echo progress to the console and save detailed logs under the `Logs` folder adjacent to the script.
 
 ---
 
 ## Features
 
+- **Local Logs folder**  
+  Stores all output in `./Logs` so nothing lands in your home directory  
 - **Idempotent setup**  
-  Cleans or creates the test directory so you always start fresh  
+  Cleans or creates the logs directory so you always start fresh  
 - **Full-upgrade workflow**  
   Keeps your OS fully up-to-date before testing  
 - **Auto-latest Fastfetch**  
@@ -33,10 +35,18 @@ All steps echo progress to the console and save detailed logs under `~/sbc_test`
 
 ---
 
+## Requirements
+
+- Debian-based ARM64 distribution (e.g. Armbian, Ubuntu Server)  
+- `bash`, `curl`, `dpkg`, `apt` & sudo privileges  
+- Internet connection  
+
+---
+
 ## Installation and Running
 
 ```bash
-git clone https://github.com/in-sympathy/sbc_test.git
-cd sbc_test
-chmod +x sbc_test.sh
-./sbc_test.sh
+git clone https://github.com/in-sympathy/SBC_Test.git
+cd SBC_Test
+chmod +x SBC_Test.sh
+./SBC_Test.sh
