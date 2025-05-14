@@ -1,10 +1,14 @@
+```bash
 #!/usr/bin/env bash
 # SBC_Test.sh — Automated SBC test script (using stress-ng only)
 set -euo pipefail
 
-LOG_DIR="${HOME}/SBC_Test"
+# Determine the directory where this script resides
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+# Logs directory inside the script folder
+LOG_DIR="${SCRIPT_DIR}/Logs"
 
-# 0. Prepare the test directory
+# 0. Prepare the Logs directory
 if [ -d "$LOG_DIR" ]; then
   echo "=== $(date '+%Y-%m-%d %H:%M:%S') Cleaning existing $LOG_DIR ==="
   rm -rf "${LOG_DIR:?}/"*
@@ -65,3 +69,4 @@ echo "=== $(date '+%Y-%m-%d %H:%M:%S') fastfetch output saved ==="
 
 echo
 echo "All done! Logs available in ${LOG_DIR}"
+```
