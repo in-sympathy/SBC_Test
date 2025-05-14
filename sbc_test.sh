@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# sbc_test.sh — Automated SBC test script (using stress-ng only)
+# SBC_Test.sh — Automated SBC test script (using stress-ng only)
 set -euo pipefail
 
-LOG_DIR="${HOME}/sbc_test"
+LOG_DIR="${HOME}/SBC_Test"
 
 # 0. Prepare the test directory
 if [ -d "$LOG_DIR" ]; then
