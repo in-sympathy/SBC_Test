@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sbc_benchmark.sh ? Automated SBC benchmark script
+# sbc_benchmark.sh — Automated SBC benchmark script (using stress-ng only)
 set -euo pipefail
 
 LOG_DIR="${HOME}/sbc_benchmark"
@@ -19,24 +19,30 @@ echo "=== $(date '+%Y-%m-%d %H:%M:%S') Starting system update & full-upgrade ===
 sudo apt update            2>&1 | tee "${LOG_DIR}/updates.log"
 sudo apt full-upgrade -y   2>&1 | tee -a "${LOG_DIR}/updates.log"
 
-# 2. Install missing packages
+# 2. Install or update fastfetch from .deb
 echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Checking/installing fastfetch, stress, stress-ng ==="
-for pkg in fastfetch stress stress-ng; do
-  if ! command -v "$pkg" &>/dev/null; then
-    echo ">>> $pkg not found. Installing..." | tee -a "${LOG_DIR}/updates.log"
-    sudo apt install -y "$pkg" 2>&1 | tee -a "${LOG_DIR}/updates.log"
-  else
-    echo ">>> $pkg already installed." | tee -a "${LOG_DIR}/updates.log"
-  fi
-done
+echo "=== $(date '+%Y-%m-%d %H:%M:%S') Checking/installing fastfetch ==="
+if ! command -v fastfetch &>/dev/null; then
+  echo ">>> fastfetch not found. Downloading and installing .deb..." | tee -a "${LOG_DIR}/updates.log"
+  curl -L -s \
+    "https://github.com/fastfetch-cli/fastfetch/releases/download/2.43.0/fastfetch-linux-aarch64.deb" \
+    -o "${LOG_DIR}/fastfetch.deb" 2>&1 | tee -a "${LOG_DIR}/updates.log"
+  sudo dpkg -i "${LOG_DIR}/fastfetch.deb" 2>&1 | tee -a "${LOG_DIR}/updates.log"
+  sudo apt-get install -f -y 2>&1 | tee -a "${LOG_DIR}/updates.log"
+  rm "${LOG_DIR}/fastfetch.deb"
+else
+  echo ">>> fastfetch already installed." | tee -a "${LOG_DIR}/updates.log"
+fi
 
-# 3. Run stress for 5 minutes
+# 3. Install stress-ng if missing
 echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Running stress for 5 minutes ==="
-stress --cpu "$(nproc)" --timeout 300 --verbose 2>&1 \
-  | tee "${LOG_DIR}/stress.log"
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') stress completed ==="
+echo "=== $(date '+%Y-%m-%d %H:%M:%S') Checking/installing stress-ng ==="
+if ! command -v stress-ng &>/dev/null; then
+  echo ">>> stress-ng not found. Installing..." | tee -a "${LOG_DIR}/updates.log"
+  sudo apt install -y stress-ng 2>&1 | tee -a "${LOG_DIR}/updates.log"
+else
+  echo ">>> stress-ng already installed." | tee -a "${LOG_DIR}/updates.log"
+fi
 
 # 4. Run stress-ng for 5 minutes
 echo
@@ -58,4 +64,4 @@ fastfetch 2>&1 | tee "${LOG_DIR}/fastfetch.log"
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') fastfetch output saved ==="
 
 echo
-echo "All done!  Logs available in ${LOG_DIR}"
+echo "All done! Logs available in ${LOG_DIR}"
