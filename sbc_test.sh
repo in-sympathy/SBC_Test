@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# sbc_test.sh — Automated SBC benchmark script (using stress-ng only)
+# sbc_test.sh — Automated SBC test script (using stress-ng only)
 set -euo pipefail
 
 LOG_DIR="${HOME}/sbc_test"
 
-# 0. Prepare the benchmark directory
+# 0. Prepare the test directory
 if [ -d "$LOG_DIR" ]; then
   echo "=== $(date '+%Y-%m-%d %H:%M:%S') Cleaning existing $LOG_DIR ==="
   rm -rf "${LOG_DIR:?}/"*
