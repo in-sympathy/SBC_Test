@@ -23,12 +23,11 @@ sudo apt full-upgrade -y   2>&1 | tee -a "${LOG_DIR}/updates.log"
 echo
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') Installing/updating fastfetch ==="
 FASTFETCH_URL="https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-aarch64.deb"
-curl -L --retry 3 "$FASTFETCH_URL" -o "${LOG_DIR}/fastfetch.deb" 2>&1 \
-  | tee -a "${LOG_DIR}/updates.log"
-sudo dpkg -i "${LOG_DIR}/fastfetch.deb" 2>&1 \
-  | tee -a "${LOG_DIR}/updates.log"
-sudo apt-get install -f -y 2>&1 \
-  | tee -a "${LOG_DIR}/updates.log"
+# download directly into our log directory
+curl -L --retry 3 "$FASTFETCH_URL" \
+  -o "${LOG_DIR}/fastfetch.deb" 2>&1 | tee -a "${LOG_DIR}/updates.log"
+sudo dpkg -i "${LOG_DIR}/fastfetch.deb" 2>&1 | tee -a "${LOG_DIR}/updates.log"
+sudo apt-get install -f -y 2>&1 | tee -a "${LOG_DIR}/updates.log"
 rm "${LOG_DIR}/fastfetch.deb"
 
 # 3. Install stress-ng if missing
