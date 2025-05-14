@@ -1,72 +1,61 @@
-```bash
 #!/usr/bin/env bash
 # SBC_Test.sh — Automated SBC test script (using stress-ng only)
 set -euo pipefail
 
-# Determine the directory where this script resides
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-# Logs directory inside the script folder
-LOG_DIR="${SCRIPT_DIR}/Logs"
+# Uncomment to see every command as it's executed:
+# set -x
 
-# 0. Prepare the Logs directory
+# 1) Figure out where this script lives, so we can put Logs next to it
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+LOG_DIR="$SCRIPT_DIR/Logs"
+
+# 2) Prepare the Logs directory
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ➤ Preparing logs in $LOG_DIR"
 if [ -d "$LOG_DIR" ]; then
-  echo "=== $(date '+%Y-%m-%d %H:%M:%S') Cleaning existing $LOG_DIR ==="
   rm -rf "${LOG_DIR:?}/"*
 else
-  echo "=== $(date '+%Y-%m-%d %H:%M:%S') Creating $LOG_DIR ==="
   mkdir -p "$LOG_DIR"
 fi
 
-# 1. System update & full-upgrade
-echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Starting system update & full-upgrade ==="
-sudo apt update            2>&1 | tee "${LOG_DIR}/updates.log"
-sudo apt full-upgrade -y   2>&1 | tee -a "${LOG_DIR}/updates.log"
+# 3) System update & full-upgrade
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ➤ Running apt update & full-upgrade"
+sudo apt update 2>&1 | tee "$LOG_DIR/updates.log"
+sudo apt full-upgrade -y 2>&1 | tee -a "$LOG_DIR/updates.log"
 
-# 2. Install fastfetch if missing (latest GitHub .deb)
-echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Checking/installing fastfetch ==="
-if ! command -v fastfetch &>/dev/null; then
-  echo ">>> fastfetch not found. Downloading latest ARM64 .deb..." | tee -a "${LOG_DIR}/updates.log"
+# 4) Install fastfetch if missing
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ➤ Checking for fastfetch"
+if ! command -v fastfetch >/dev/null; then
+  echo "  fastfetch not found – downloading latest .deb" | tee -a "$LOG_DIR/updates.log"
   FASTFETCH_URL="https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-aarch64.deb"
-  curl -L --retry 3 "$FASTFETCH_URL" -o "${LOG_DIR}/fastfetch.deb" 2>&1 \
-    | tee -a "${LOG_DIR}/updates.log"
-  sudo dpkg -i "${LOG_DIR}/fastfetch.deb" 2>&1 | tee -a "${LOG_DIR}/updates.log"
-  sudo apt-get install -f -y 2>&1 | tee -a "${LOG_DIR}/updates.log"
-  rm "${LOG_DIR}/fastfetch.deb"
+  curl -L --retry 3 "$FASTFETCH_URL" -o "$LOG_DIR/fastfetch.deb" 2>&1 \
+    | tee -a "$LOG_DIR/updates.log"
+  sudo dpkg -i "$LOG_DIR/fastfetch.deb" 2>&1 | tee -a "$LOG_DIR/updates.log"
+  sudo apt-get install -f -y 2>&1 | tee -a "$LOG_DIR/updates.log"
+  rm "$LOG_DIR/fastfetch.deb"
 else
-  echo ">>> fastfetch already installed." | tee -a "${LOG_DIR}/updates.log"
+  echo "  fastfetch already installed" | tee -a "$LOG_DIR/updates.log"
 fi
 
-# 3. Install stress-ng if missing
-echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Checking/installing stress-ng ==="
-if ! command -v stress-ng &>/dev/null; then
-  echo ">>> stress-ng not found. Installing..." | tee -a "${LOG_DIR}/updates.log"
-  sudo apt install -y stress-ng 2>&1 | tee -a "${LOG_DIR}/updates.log"
+# 5) Install stress-ng if missing
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ➤ Checking for stress-ng"
+if ! command -v stress-ng >/dev/null; then
+  echo "  stress-ng not found – installing via apt" | tee -a "$LOG_DIR/updates.log"
+  sudo apt install -y stress-ng 2>&1 | tee -a "$LOG_DIR/updates.log"
 else
-  echo ">>> stress-ng already installed." | tee -a "${LOG_DIR}/updates.log"
+  echo "  stress-ng already installed" | tee -a "$LOG_DIR/updates.log"
 fi
 
-# 4. Run stress-ng for 5 minutes
-echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Running stress-ng for 5 minutes ==="
+# 6) Run stress-ng
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ➤ Running stress-ng (5m)"
 stress-ng --cpu 0 --cpu-method all --timeout 5m --verbose 2>&1 \
-  | tee "${LOG_DIR}/stress-ng.log"
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') stress-ng completed ==="
+  | tee "$LOG_DIR/stress-ng.log"
 
-# 5. Ping 8.8.8.8 every 10 seconds for 30 minutes
-echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Pinging 8.8.8.8 every 10s for 30 minutes ==="
-ping -i 10 -w 1800 8.8.8.8 2>&1 | tee "${LOG_DIR}/ping.log"
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') ping test completed ==="
+# 7) Ping test
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ➤ Pinging 8.8.8.8 every 10s for 30m"
+ping -i 10 -w 1800 8.8.8.8 2>&1 | tee "$LOG_DIR/ping.log"
 
-# 6. Capture system info with fastfetch
-echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Capturing system info with fastfetch ==="
-fastfetch 2>&1 | tee "${LOG_DIR}/fastfetch.log"
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') fastfetch output saved ==="
+# 8) fastfetch snapshot
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ➤ Capturing system info with fastfetch"
+fastfetch 2>&1 | tee "$LOG_DIR/fastfetch.log"
 
-echo
-echo "All done! Logs available in ${LOG_DIR}"
-```
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ➤ All done! Logs in $LOG_DIR"
