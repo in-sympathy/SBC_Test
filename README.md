@@ -1,4 +1,4 @@
-# sbc_test
+# SBC_Test
 
 > Automated SBC test script for Debian-based ARM single-board computers
 
