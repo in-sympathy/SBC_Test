@@ -19,16 +19,20 @@ echo "=== $(date '+%Y-%m-%d %H:%M:%S') Starting system update & full-upgrade ===
 sudo apt update            2>&1 | tee "${LOG_DIR}/updates.log"
 sudo apt full-upgrade -y   2>&1 | tee -a "${LOG_DIR}/updates.log"
 
-# 2. Install or update fastfetch from the latest GitHub release .deb
+# 2. Install fastfetch if missing (latest GitHub .deb)
 echo
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') Installing/updating fastfetch ==="
-FASTFETCH_URL="https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-aarch64.deb"
-# download directly into our log directory
-curl -L --retry 3 "$FASTFETCH_URL" \
-  -o "${LOG_DIR}/fastfetch.deb" 2>&1 | tee -a "${LOG_DIR}/updates.log"
-sudo dpkg -i "${LOG_DIR}/fastfetch.deb" 2>&1 | tee -a "${LOG_DIR}/updates.log"
-sudo apt-get install -f -y 2>&1 | tee -a "${LOG_DIR}/updates.log"
-rm "${LOG_DIR}/fastfetch.deb"
+echo "=== $(date '+%Y-%m-%d %H:%M:%S') Checking/installing fastfetch ==="
+if ! command -v fastfetch &>/dev/null; then
+  echo ">>> fastfetch not found. Downloading latest ARM64 .deb..." | tee -a "${LOG_DIR}/updates.log"
+  FASTFETCH_URL="https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-aarch64.deb"
+  curl -L --retry 3 "$FASTFETCH_URL" -o "${LOG_DIR}/fastfetch.deb" 2>&1 \
+    | tee -a "${LOG_DIR}/updates.log"
+  sudo dpkg -i "${LOG_DIR}/fastfetch.deb" 2>&1 | tee -a "${LOG_DIR}/updates.log"
+  sudo apt-get install -f -y 2>&1 | tee -a "${LOG_DIR}/updates.log"
+  rm "${LOG_DIR}/fastfetch.deb"
+else
+  echo ">>> fastfetch already installed." | tee -a "${LOG_DIR}/updates.log"
+fi
 
 # 3. Install stress-ng if missing
 echo
