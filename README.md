@@ -41,3 +41,4 @@ All stages echo status to the console and save detailed logs in `~/sbc_benchmark
 git clone https://github.com/your-username/sbc_benchmark.git
 cd sbc_benchmark
 chmod +x sbc_benchmark.sh
+./sbc_benchmark
