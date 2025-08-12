@@ -103,11 +103,11 @@ for bs in "${MEM_BLOCK_SIZES[@]}"; do
   done
 done
 
-# ---------- Threads test ----------
+# ---------- Threads test (correct flags) ----------
 echo "[$(date '+%F %T')] ➤ sysbench THREADS (${THREADS_PASS_SECS}s)"
 sysbench threads \
   --threads="$THREADS" --time=$THREADS_PASS_SECS --events=0 --verbosity=5 \
-  --threads-yields=100 --threads-locks=8 \
+  --thread-yields=100 --thread-locks=8 \
   run 2>&1 | tee "$LOG_DIR/sysbench_threads.log"
 
 # ---------- Mutex test ----------
@@ -137,7 +137,7 @@ PING_EXIT=${PIPESTATUS[0]}
 set -e
 echo "Ping exit status: $PING_EXIT" | tee -a "$LOG_DIR/ping.log"
 
-# ---------- fastfetch snapshot ----------
+# ---------- fastfetch snapshot (run at end, like original) ----------
 echo "[$(date '+%F %T')] ➤ Capturing system info with fastfetch"
 fastfetch 2>&1 | tee "$LOG_DIR/fastfetch.log"
 
