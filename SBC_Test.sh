@@ -117,11 +117,10 @@ for bs in "${MEM_BLOCK_SIZES[@]}"; do
   done
 done
 
-# ---------- Threads test ----------
+# ---------- Threads test (modern sysbench: no extra knobs) ----------
 echo "[$(date '+%F %T')] ➤ sysbench THREADS (${THREADS_PASS_SECS}s)"
 sysbench threads \
   --threads="$THREADS" --time=$THREADS_PASS_SECS --events=0 --verbosity=5 \
-  --threads-yields=100 --threads-locks=8 \
   run 2>&1 | tee "$LOG_DIR/sysbench_threads.log"
 
 # ---------- Mutex test ----------
@@ -164,9 +163,7 @@ KERNEL="$(uname -r)"
 UPTIME="$(uptime -p || true)"
 MEM_HUMAN="$(free -h | awk '/^Mem:/ {printf "Total: %s, Used: %s, Free: %s, Avail: %s", $2,$3,$4,$7}')"
 SWAP_HUMAN="$(free -h | awk '/^Swap:/ {printf "Total: %s, Used: %s, Free: %s", $2,$3,$4}')"
-# Active adapters (state UP, excluding loopback)
 ACTIVE_IFS="$(ip -br link 2>/dev/null | awk '$2=="UP"{print $1}' | grep -v '^lo$' || true)"
-# IP addresses for active adapters
 IP_TABLE=$(
   while read -r IF; do
     [[ -z "$IF" ]] && continue
@@ -175,19 +172,18 @@ IP_TABLE=$(
     printf "%s  IPv4: %s  IPv6: %s\n" "$IF" "${IP4:-n/a}" "${IP6:-n/a}"
   done <<< "$ACTIVE_IFS"
 )
-# Storage: filesystems + block layout
-DF_TABLE="$(df -hT | sed '1!b; s/^/Filesystem Type Size Used Avail Use% Mounted on\n/; t; :a; n; ba')" # keep header readable
-LSBLK_TABLE="$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL | sed '1 s/^/NAME   SIZE  TYPE  FSTYPE  MOUNTPOINT  MODEL\n/')"
+DF_TABLE="$(df -hT)"
+LSBLK_TABLE="$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL)"
 
 # Telemetry summary
-read -r MAXT AVGT MINC AVGC <<<"$(awk -F, 'NR>1{t+=$2;c+=$3; if($2>mt) mt=$2; if(minc==0||$3<minc) minc=$3; n++} END{if(n==0){print "0 0 0 0"} else {printf "%.1f %.1f %.0f %.0f", mt, t/n, minc, c/n}}' "$TELEM_LOG")"
-THROTTLING="$(awk -F, 'NR>1 && $4!="0x0" && $4!="N/A"{print $4; exit} END{if(!NR) exit 0}' "$TELEM_LOG" || true)"
+read -r MAXT AVGT MINC AVGC <<<"$(awk -F, 'NR>1{t+=$2;c+=$3; if($2>mt) mt=$2; if(minc==0||$3<minc) minc=$3; n++} END{if(n==0){print "0 0 0 0"} else {printf \"%.1f %.1f %.0f %.0f\", mt, t/n, minc, c/n}}' "$TELEM_LOG")"
+THROTTLING="$(awk -F, 'NR>1 && $4!="0x0" && $4!="N/A"{print $4; exit}' "$TELEM_LOG" 2>/dev/null || true)"
 [[ -z "$THROTTLING" ]] && THROTTLING="none"
 
 # Ping summary
 PING_SUMMARY="$(grep -E "packet loss|rtt min/avg/max" "$LOG_DIR/ping.log" | tail -n 2 || true)"
 
-# Sysbench parses (robust against set -e)
+# Sysbench parses
 CPU_BASE_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_baseline.log" | awk -F: '{print $2}' | xargs || true)"
 CPU_NT_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_nt.log" | awk -F: '{print $2}' | xargs || true)"
 CPU_2NT_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_2nt.log" | awk -F: '{print $2}' | xargs || true)"
@@ -195,7 +191,7 @@ THREADS_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_threads.log" | aw
 MUTEX_TOTAL="$(grep -m1 "total time:" "$LOG_DIR/sysbench_mutex.log" | awk -F: '{print $2}' | xargs || true)"
 MUTEX_AVG="$(grep -m1 "avg:" "$LOG_DIR/sysbench_mutex.log" | awk -F: '{print $2}' | xargs || true)"
 
-# Memory results (collect top-line MiB/sec for each run)
+# Memory results (collect MiB/sec for each run)
 MEM_RESULTS=$(
   for f in "$LOG_DIR"/sysbench_mem_*.log "$LOG_DIR"/sysbench_memory_*.log "$LOG_DIR"/sysbench_mem_*_*.log 2>/dev/null; do
     [[ -e "$f" ]] || continue
@@ -208,7 +204,6 @@ MEM_RESULTS=$(
 
 # PASS/FAIL heuristics
 PASS_TEMP=1; PASS_THROT=1; PASS_PING=1
-# Temp threshold example: 85C (Pi 5 throttle point is lower but use 85C for red)
 (( $(printf "%.0f" "${MAXT:-0}") <= 85 )) || PASS_TEMP=0
 [[ "$THROTTLING" == "none" ]] || PASS_THROT=0
 LOSS_PCT="$(echo "$PING_SUMMARY" | grep -m1 "packet loss" | sed -E 's/.* ([0-9]+)% packet loss.*/\1/' || echo 0)"
