@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SBC_Test.sh — Comprehensive SBC sanity test (sysbench + telemetry + ping)
+# SBC_Test.sh — Comprehensive SBC sanity test (sysbench + telemetry + ping + report)
 set -euo pipefail
 
 # ---------- Config ----------
@@ -23,6 +23,20 @@ ENABLE_FILEIO=0
 FILEIO_TOTAL_SIZE="2G"    # total test file size
 FILEIO_MODE="rndrw"       # rndrd|rndwr|rndrw|seqrd|seqwr
 FILEIO_DURATION=180
+
+# ---------- Helpers ----------
+cecho() { # cecho <color> <text>
+  local c="$1"; shift
+  local reset="\033[0m"
+  local green="\033[32m"; local yellow="\033[33m"; local red="\033[31m"; local cyan="\033[36m"
+  case "$c" in
+    green) printf "%b%s%b\n" "$green" "$*" "$reset" ;;
+    yellow) printf "%b%s%b\n" "$yellow" "$*" "$reset" ;;
+    red) printf "%b%s%b\n" "$red" "$*" "$reset" ;;
+    cyan) printf "%b%s%b\n" "$cyan" "$*" "$reset" ;;
+    *) echo "$*";;
+  esac
+}
 
 # ---------- Prep ----------
 mkdir -p "$LOG_DIR"
@@ -103,11 +117,11 @@ for bs in "${MEM_BLOCK_SIZES[@]}"; do
   done
 done
 
-# ---------- Threads test (correct flags) ----------
+# ---------- Threads test ----------
 echo "[$(date '+%F %T')] ➤ sysbench THREADS (${THREADS_PASS_SECS}s)"
 sysbench threads \
   --threads="$THREADS" --time=$THREADS_PASS_SECS --events=0 --verbosity=5 \
-  --thread-yields=100 --thread-locks=8 \
+  --threads-yields=100 --threads-locks=8 \
   run 2>&1 | tee "$LOG_DIR/sysbench_threads.log"
 
 # ---------- Mutex test ----------
@@ -137,9 +151,138 @@ PING_EXIT=${PIPESTATUS[0]}
 set -e
 echo "Ping exit status: $PING_EXIT" | tee -a "$LOG_DIR/ping.log"
 
-# ---------- fastfetch snapshot (run at end, like original) ----------
+# ---------- fastfetch snapshot (end, like original) ----------
 echo "[$(date '+%F %T')] ➤ Capturing system info with fastfetch"
 fastfetch 2>&1 | tee "$LOG_DIR/fastfetch.log"
+
+# ---------- Report generator ----------
+REPORT="$LOG_DIR/report.txt"
+
+# System info (OS, kernel, RAM, IP/adapters, storage)
+OS_NAME="$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-Unknown}")"
+KERNEL="$(uname -r)"
+UPTIME="$(uptime -p || true)"
+MEM_HUMAN="$(free -h | awk '/^Mem:/ {printf "Total: %s, Used: %s, Free: %s, Avail: %s", $2,$3,$4,$7}')"
+SWAP_HUMAN="$(free -h | awk '/^Swap:/ {printf "Total: %s, Used: %s, Free: %s", $2,$3,$4}')"
+# Active adapters (state UP, excluding loopback)
+ACTIVE_IFS="$(ip -br link 2>/dev/null | awk '$2=="UP"{print $1}' | grep -v '^lo$' || true)"
+# IP addresses for active adapters
+IP_TABLE=$(
+  while read -r IF; do
+    [[ -z "$IF" ]] && continue
+    IP4="$(ip -4 -br addr show dev "$IF" 2>/dev/null | awk '{print $3}' | tr -d '\n')"
+    IP6="$(ip -6 -br addr show dev "$IF" 2>/dev/null | awk '{print $3}' | tr -d '\n')"
+    printf "%s  IPv4: %s  IPv6: %s\n" "$IF" "${IP4:-n/a}" "${IP6:-n/a}"
+  done <<< "$ACTIVE_IFS"
+)
+# Storage: filesystems + block layout
+DF_TABLE="$(df -hT | sed '1!b; s/^/Filesystem Type Size Used Avail Use% Mounted on\n/; t; :a; n; ba')" # keep header readable
+LSBLK_TABLE="$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL | sed '1 s/^/NAME   SIZE  TYPE  FSTYPE  MOUNTPOINT  MODEL\n/')"
+
+# Telemetry summary
+read -r MAXT AVGT MINC AVGC <<<"$(awk -F, 'NR>1{t+=$2;c+=$3; if($2>mt) mt=$2; if(minc==0||$3<minc) minc=$3; n++} END{if(n==0){print "0 0 0 0"} else {printf "%.1f %.1f %.0f %.0f", mt, t/n, minc, c/n}}' "$TELEM_LOG")"
+THROTTLING="$(awk -F, 'NR>1 && $4!="0x0" && $4!="N/A"{print $4; exit} END{if(!NR) exit 0}' "$TELEM_LOG" || true)"
+[[ -z "$THROTTLING" ]] && THROTTLING="none"
+
+# Ping summary
+PING_SUMMARY="$(grep -E "packet loss|rtt min/avg/max" "$LOG_DIR/ping.log" | tail -n 2 || true)"
+
+# Sysbench parses (robust against set -e)
+CPU_BASE_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_baseline.log" | awk -F: '{print $2}' | xargs || true)"
+CPU_NT_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_nt.log" | awk -F: '{print $2}' | xargs || true)"
+CPU_2NT_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_2nt.log" | awk -F: '{print $2}' | xargs || true)"
+THREADS_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_threads.log" | awk -F: '{print $2}' | xargs || true)"
+MUTEX_TOTAL="$(grep -m1 "total time:" "$LOG_DIR/sysbench_mutex.log" | awk -F: '{print $2}' | xargs || true)"
+MUTEX_AVG="$(grep -m1 "avg:" "$LOG_DIR/sysbench_mutex.log" | awk -F: '{print $2}' | xargs || true)"
+
+# Memory results (collect top-line MiB/sec for each run)
+MEM_RESULTS=$(
+  for f in "$LOG_DIR"/sysbench_mem_*.log "$LOG_DIR"/sysbench_memory_*.log "$LOG_DIR"/sysbench_mem_*_*.log 2>/dev/null; do
+    [[ -e "$f" ]] || continue
+    b="$(basename "$f")"
+    rate="$(grep -m1 "MiB/sec" "$f" | sed -E 's/.*\(([^)]*MiB\/sec)\).*/\1/' || true)"
+    [[ -z "$rate" ]] && rate="$(grep -m1 -E "MiB/sec|MB/sec" "$f" | awk '{print $NF}' || true)"
+    echo "$b: $rate"
+  done
+)
+
+# PASS/FAIL heuristics
+PASS_TEMP=1; PASS_THROT=1; PASS_PING=1
+# Temp threshold example: 85C (Pi 5 throttle point is lower but use 85C for red)
+(( $(printf "%.0f" "${MAXT:-0}") <= 85 )) || PASS_TEMP=0
+[[ "$THROTTLING" == "none" ]] || PASS_THROT=0
+LOSS_PCT="$(echo "$PING_SUMMARY" | grep -m1 "packet loss" | sed -E 's/.* ([0-9]+)% packet loss.*/\1/' || echo 0)"
+[[ -n "$LOSS_PCT" ]] || LOSS_PCT=0
+(( LOSS_PCT == 0 )) || PASS_PING=0
+
+# Build report
+{
+  echo "==================== SBC TEST REPORT ===================="
+  echo "Date: $(date)"
+  echo
+  echo "----- System Summary -----"
+  echo "OS:        $OS_NAME"
+  echo "Kernel:    $KERNEL"
+  echo "Uptime:    $UPTIME"
+  echo "CPU cores: $THREADS"
+  echo "Memory:    $MEM_HUMAN"
+  echo "Swap:      $SWAP_HUMAN"
+  echo
+  echo "Active Adapters & IPs:"
+  if [[ -n "$IP_TABLE" ]]; then
+    echo "$IP_TABLE"
+  else
+    echo "  (none UP)"
+  fi
+  echo
+  echo "Storage (filesystems):"
+  echo "$DF_TABLE"
+  echo
+  echo "Storage (block devices):"
+  echo "$LSBLK_TABLE"
+  echo
+  echo "----- CPU TEST RESULTS -----"
+  printf "Baseline (8t): %s\n" "${CPU_BASE_EPS:-n/a}"
+  printf "N threads    : %s\n" "${CPU_NT_EPS:-n/a}"
+  printf "2N threads   : %s\n" "${CPU_2NT_EPS:-n/a}"
+  echo
+  echo "----- MEMORY TEST RESULTS (MiB/sec) -----"
+  if [[ -n "$MEM_RESULTS" ]]; then
+    echo "$MEM_RESULTS"
+  else
+    echo "(no memory results parsed)"
+  fi
+  echo
+  echo "----- THREADS TEST RESULTS -----"
+  printf "Events/sec: %s\n" "${THREADS_EPS:-n/a}"
+  echo
+  echo "----- MUTEX TEST RESULTS -----"
+  printf "Total time: %s | Avg: %s\n" "${MUTEX_TOTAL:-n/a}" "${MUTEX_AVG:-n/a}"
+  echo
+  echo "----- TEMPERATURE / CLOCK SUMMARY -----"
+  printf "Max Temp: %.1f°C | Avg Temp: %.1f°C | Min ARM Clock: %.0f Hz | Avg ARM Clock: %.0f Hz\n" "${MAXT:-0}" "${AVGT:-0}" "${MINC:-0}" "${AVGC:-0}"
+  echo "Throttling: $THROTTLING"
+  echo
+  echo "----- NETWORK TEST RESULTS -----"
+  if [[ -n "$PING_SUMMARY" ]]; then
+    echo "$PING_SUMMARY"
+  else
+    echo "(no ping summary parsed)"
+  fi
+  echo
+  echo "----- fastfetch (hardware snapshot) -----"
+  cat "$LOG_DIR/fastfetch.log" 2>/dev/null || echo "(fastfetch log missing)"
+  echo "==========================================================="
+} | tee "$REPORT" >/dev/null
+
+# Colorized summary to terminal (quick glance)
+cecho cyan   "=== QUICK STATUS ==="
+[[ $PASS_TEMP -eq 1 ]] && cecho green "Thermals: OK (max ${MAXT:-0}°C)" || cecho red "Thermals: HOT! (max ${MAXT:-0}°C)"
+[[ $PASS_THROT -eq 1 ]] && cecho green "Throttling: none" || cecho red "Throttling flags: $THROTTLING"
+[[ $PASS_PING -eq 1 ]] && cecho green "Network: OK (loss ${LOSS_PCT}%)" || cecho yellow "Network loss: ${LOSS_PCT}%"
+echo
+cecho cyan "Full report saved to: $REPORT"
+echo
 
 # ---------- Done ----------
 echo "[$(date '+%F %T')] ➤ All done! Logs in $LOG_DIR"
