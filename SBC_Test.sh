@@ -72,7 +72,7 @@ telemetry() {
       throttled="$(vcgencmd get_throttled 2>/dev/null | awk -F= '{print $2}')"
     else
       raw="$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)"
-      temp_c="$(awk "BEGIN{printf \"%.1f\", $raw/1000}")"
+      temp_c="$(awk -v r="$raw" 'BEGIN{printf "%.1f", r/1000}')"
       arm_hz="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo 0)"
       throttled="N/A"
     fi
@@ -175,34 +175,54 @@ IP_TABLE=$(
 DF_TABLE="$(df -hT)"
 LSBLK_TABLE="$(lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL)"
 
-# Telemetry summary
-read -r MAXT AVGT MINC AVGC <<<"$(awk -F, 'NR>1{t+=$2;c+=$3; if($2>mt) mt=$2; if(minc==0||$3<minc) minc=$3; n++} END{if(n==0){print "0 0 0 0"} else {printf \"%.1f %.1f %.0f %.0f\", mt, t/n, minc, c/n}}' "$TELEM_LOG")"
-THROTTLING="$(awk -F, 'NR>1 && $4!="0x0" && $4!="N/A"{print $4; exit}' "$TELEM_LOG" 2>/dev/null || true)"
+# ---------- FIXED: Telemetry + parsing ----------
+# Telemetry summary (max/avg temp, min/avg ARM clock)
+read -r MAXT AVGT MINC AVGC <<<"$(
+  awk -F, '
+    NR>1 {
+      t+=$2; c+=$3;
+      if ($2>mt) mt=$2;
+      if (minc==0 || $3<minc) minc=$3;
+      n++
+    }
+    END {
+      if (n==0) {
+        print "0 0 0 0"
+      } else {
+        printf "%.1f %.1f %.0f %.0f\n", mt, t/n, minc, c/n
+      }
+    }
+  ' "$TELEM_LOG"
+)"
+
+# Any non-zero throttling seen?
+THROTTLING="$(
+  awk -F, 'NR>1 && $4!="0x0" && $4!="N/A" {print $4; exit}' "$TELEM_LOG" 2>/dev/null
+)"
 [[ -z "$THROTTLING" ]] && THROTTLING="none"
 
-# Ping summary
-PING_SUMMARY="$(grep -E "packet loss|rtt min/avg/max" "$LOG_DIR/ping.log" | tail -n 2 || true)"
+# Ping summary (support both iputils output styles)
+PING_SUMMARY="$(grep -E "packet loss|rtt min/avg/max|round-trip min/avg/max" "$LOG_DIR/ping.log" | tail -n 2 || true)"
 
 # Sysbench parses
 CPU_BASE_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_baseline.log" | awk -F: '{print $2}' | xargs || true)"
-CPU_NT_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_nt.log" | awk -F: '{print $2}' | xargs || true)"
-CPU_2NT_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_2nt.log" | awk -F: '{print $2}' | xargs || true)"
-THREADS_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_threads.log" | awk -F: '{print $2}' | xargs || true)"
-MUTEX_TOTAL="$(grep -m1 "total time:" "$LOG_DIR/sysbench_mutex.log" | awk -F: '{print $2}' | xargs || true)"
-MUTEX_AVG="$(grep -m1 "avg:" "$LOG_DIR/sysbench_mutex.log" | awk -F: '{print $2}' | xargs || true)"
+CPU_NT_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_nt.log"       | awk -F: '{print $2}' | xargs || true)"
+CPU_2NT_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_cpu_2nt.log"     | awk -F: '{print $2}' | xargs || true)"
+THREADS_EPS="$(grep -m1 "events per second" "$LOG_DIR/sysbench_threads.log"     | awk -F: '{print $2}' | xargs || true)"
+MUTEX_TOTAL="$(grep -m1 "total time:"        "$LOG_DIR/sysbench_mutex.log"      | awk -F: '{print $2}' | xargs || true)"
+MUTEX_AVG="$(grep -m1 "avg:"                 "$LOG_DIR/sysbench_mutex.log"      | awk -F: '{print $2}' | xargs || true)"
 
 # Memory results (collect MiB/sec for each run)
 MEM_RESULTS=$(
-  for f in "$LOG_DIR"/sysbench_mem_*.log "$LOG_DIR"/sysbench_memory_*.log "$LOG_DIR"/sysbench_mem_*_*.log 2>/dev/null; do
-    [[ -e "$f" ]] || continue
+  shopt -s nullglob
+  for f in "$LOG_DIR"/sysbench_mem_*.log "$LOG_DIR"/sysbench_memory_*.log; do
     b="$(basename "$f")"
-    rate="$(grep -m1 "MiB/sec" "$f" | sed -E 's/.*\(([^)]*MiB\/sec)\).*/\1/' || true)"
-    [[ -z "$rate" ]] && rate="$(grep -m1 -E "MiB/sec|MB/sec" "$f" | awk '{print $NF}' || true)"
-    echo "$b: $rate"
+    rate="$(grep -m1 -E "MiB/sec|MB/sec" "$f" | sed -E 's/.*\(([^)]*MiB\/sec)\).*/\1/;t; s/.* ([0-9.]+(MiB|MB)\/sec).*/\1/')" || true
+    echo "$b: ${rate:-n/a}"
   done
 )
 
-# PASS/FAIL heuristics
+# ---------- PASS/FAIL heuristics ----------
 PASS_TEMP=1; PASS_THROT=1; PASS_PING=1
 (( $(printf "%.0f" "${MAXT:-0}") <= 85 )) || PASS_TEMP=0
 [[ "$THROTTLING" == "none" ]] || PASS_THROT=0
@@ -210,7 +230,7 @@ LOSS_PCT="$(echo "$PING_SUMMARY" | grep -m1 "packet loss" | sed -E 's/.* ([0-9]+
 [[ -n "$LOSS_PCT" ]] || LOSS_PCT=0
 (( LOSS_PCT == 0 )) || PASS_PING=0
 
-# Build report
+# ---------- Build report ----------
 {
   echo "==================== SBC TEST REPORT ===================="
   echo "Date: $(date)"
@@ -270,7 +290,7 @@ LOSS_PCT="$(echo "$PING_SUMMARY" | grep -m1 "packet loss" | sed -E 's/.* ([0-9]+
   echo "==========================================================="
 } | tee "$REPORT" >/dev/null
 
-# Colorized summary to terminal (quick glance)
+# ---------- Colorized quick summary ----------
 cecho cyan   "=== QUICK STATUS ==="
 [[ $PASS_TEMP -eq 1 ]] && cecho green "Thermals: OK (max ${MAXT:-0}°C)" || cecho red "Thermals: HOT! (max ${MAXT:-0}°C)"
 [[ $PASS_THROT -eq 1 ]] && cecho green "Throttling: none" || cecho red "Throttling flags: $THROTTLING"
