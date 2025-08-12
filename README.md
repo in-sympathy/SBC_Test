@@ -1,52 +1,44 @@
-# SBC_Test
+# SBC_Test.sh — Comprehensive SBC Post-Repair Burn-In & Diagnostics
 
-> Automated SBC test script for Debian-based ARM single-board computers
+## Overview
+`SBC_Test.sh` is a **full-system stress test and diagnostics script** designed for **single board computers (SBCs)** such as the Raspberry Pi 5.  
+It is optimized for **post-repair validation** to confirm that the board operates reliably under sustained load.
 
-`SBC_Test.sh` will:
-
-- Create (or clean) a `Logs` directory next to the script  
-- Run `sudo apt update` & `sudo apt full-upgrade -y`, logging output to `updates.log`  
-- Download & install the **latest** ARM64 `fastfetch` `.deb` from GitHub releases  
-- Ensure **stress-ng** is installed  
-- Perform a **5 min CPU burn-in** using `stress-ng` (logs to `stress-ng.log`)  
-- Ping `8.8.8.8` **every 10 seconds for 30 minutes** (logs to `ping.log`)  
-- Capture a snapshot of system info with `fastfetch` (logs to `fastfetch.log`)
-
-All steps echo progress to the console and save detailed logs under the `Logs` folder adjacent to the script.
-
----
-
-## Features
-
-- **Local Logs folder**  
-  Stores all output in `./Logs` so nothing lands in your home directory  
-- **Idempotent setup**  
-  Cleans or creates the logs directory so you always start fresh  
-- **Full-upgrade workflow**  
-  Keeps your OS fully up-to-date before testing  
-- **Auto-latest Fastfetch**  
-  Pulls the newest ARM64 `.deb` via GitHub’s “latest” redirect  
-- **Stress-ng only**  
-  Broad coverage of CPU, cache, memory & ARM-specific workloads  
-- **Timed network test**  
-  30 min ping test at 10 s intervals with final summary  
-- **Comprehensive logging**  
-  Live console output via `tee` plus per-stage log files  
+The script:
+- Stresses **CPU**, **memory**, **threads**, and **mutex performance** using [`sysbench`](https://github.com/akopytov/sysbench)
+- Runs a **10-minute network sanity test** (ping)
+- Collects **telemetry** (temperature, CPU clock, throttling status, load) every second
+- Captures a **hardware/software snapshot** with [`fastfetch`](https://github.com/fastfetch-cli/fastfetch)
+- Generates a **comprehensive report** combining:
+  - OS & kernel version
+  - RAM & swap stats
+  - Active network adapters & IP addresses
+  - Storage usage & block device layout
+  - Parsed benchmarking results
+  - Temperature & throttling analysis
+  - Network packet loss and latency
+  - Full `fastfetch` hardware profile
+- Prints a **colorized PASS/FAIL summary** to the terminal
 
 ---
 
 ## Requirements
+- **Debian-based Linux** (tested on Raspberry Pi OS, Ubuntu)
+- **Internet connection** (for installing dependencies & ping test)
+- Bash 4.0+  
+- Packages:
+  - `sysbench` ≥ 1.0.x
+  - `fastfetch`
+  - `vcgencmd` (Raspberry Pi-specific, optional but recommended)
+  - `curl`, `lsblk`, `ip`, `df`, `free`, `grep`, `awk`
 
-- Debian-based ARM64 distribution (e.g. Armbian, Ubuntu Server)  
-- `bash`, `curl`, `dpkg`, `apt` & sudo privileges  
-- Internet connection  
+The script will automatically install `sysbench` and `fastfetch` if missing.
 
 ---
 
-## Installation and Running
-
+## Installation
+Clone the repository and make the script executable:
 ```bash
-git clone https://github.com/in-sympathy/SBC_Test.git
-cd SBC_Test
+git clone https://github.com/<yourusername>/<yourrepo>.git
+cd <yourrepo>
 chmod +x SBC_Test.sh
-./SBC_Test.sh
