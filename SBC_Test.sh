@@ -39,7 +39,7 @@ if [[ "$THREADS" -gt 1 ]]; then MEM_THREAD_MODES=(1 "$THREADS"); else MEM_THREAD
 PIN_GOVERNOR=1            # 1 = set 'performance' during test and restore after
 ENABLE_APT_UPGRADE=0      # 1 = run 'apt full-upgrade' before testing (mutates system)
 PING_TARGET=""            # "" = auto (default gateway); set an IP/host to override
-PING_COUNT_SECS=180
+PING_COUNT_SECS=60
 
 # Optional file I/O test (heavy flash wear)
 ENABLE_FILEIO=0
