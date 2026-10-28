@@ -100,7 +100,7 @@ Edit the variables at the top of the script:
 | `PIN_GOVERNOR` | `1` | Set `performance` during the test and restore after |
 | `ENABLE_APT_UPGRADE` | `0` | Set `1` to `apt full-upgrade` before testing (mutates the system) |
 | `PING_TARGET` | `""` (auto) | Empty = default gateway; set an IP/host to override |
-| `PING_COUNT_SECS` | `180` | Duration of the ping test |
+| `PING_COUNT_SECS` | `60` | Duration of the ping test |
 | `ENABLE_FILEIO` | `0` | Set `1` to run the flash-wearing file I/O test |
 
 ---
@@ -127,7 +127,7 @@ Edit the variables at the top of the script:
 ---
 
 ## Notes & caveats
-- **Runtime** is roughly 18–22 minutes depending on board speed and the doubled memory sweep.
+- **Runtime** is roughly 16–20 minutes depending on board speed and the doubled memory sweep.
 - The **governor is restored** on exit even if the script is interrupted (trap on EXIT), along with stopping the telemetry logger.
 - `vcgencmd`-based throttle flags are **Raspberry Pi only**; on other SoCs the clock-vs-advertised signal is the honest substitute.
 - `MEM_TOTAL_SIZE` controls run *length*, not the reported *rate* — changing it doesn't change comparability of MiB/sec figures.
