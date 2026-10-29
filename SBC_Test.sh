@@ -424,4 +424,30 @@ LOSS_PCT="$(echo "$PING_SUMMARY" | grep -m1 "packet loss" | sed -E 's/.* ([0-9]+
   echo
   echo "----- TEMPERATURE / CLOCK SUMMARY -----"
   printf "Max Temp: %.1f°C | Avg Temp: %.1f°C\n" "${MAXT:-0}" "${AVGT:-0}"
-  printf "Clock (all cores): peak %.0f Hz | min %.0f Hz | avg %.0f Hz\n" "${MAXHZ:-0}" "${MINHZ:-0}"
+  printf "Clock (all cores): peak %.0f Hz | min %.0f Hz | avg %.0f Hz\n" "${MAXHZ:-0}" "${MINHZ:-0}" "${AVGHZ:-0}"
+  echo "Clock vs advertised: ${CLOCK_NOTE}"
+  echo "Throttling: $THROTTLING"
+  echo
+  echo "----- NETWORK TEST RESULTS (target: ${PING_TARGET}) -----"
+  [[ -n "$PING_SUMMARY" ]] && echo "$PING_SUMMARY" || echo "(no ping summary parsed)"
+  echo
+  echo "----- fastfetch (hardware snapshot) -----"
+  cat "$LOG_DIR/fastfetch.log" 2>/dev/null || echo "(fastfetch log missing)"
+  echo "==========================================================="
+} | tee "$REPORT" >/dev/null
+
+# ---------- Colorized quick summary ----------
+cecho cyan "=== QUICK STATUS ==="
+[[ $PASS_TEMP -eq 1 ]] && cecho green "Thermals: OK (max ${MAXT:-0}°C)" || cecho red "Thermals: HOT! (max ${MAXT:-0}°C)"
+if [[ "$THROT_KNOWN" -eq 1 ]]; then
+  [[ $PASS_THROT -eq 1 ]] && cecho green "Throttling: none" || cecho red "Throttling flags: $THROTTLING"
+else
+  cecho yellow "Throttling: $THROTTLING"
+fi
+[[ $PASS_PING -eq 1 ]] && cecho green "Network: OK (loss ${LOSS_PCT}%)" || cecho yellow "Network loss: ${LOSS_PCT}%"
+cecho cyan "Governor during test: ${GOV_SET}"
+echo
+cecho cyan "Full report saved to: $REPORT"
+echo
+
+echo "[$(date '+%F %T')] ➤ All done! Logs in $LOG_DIR"
