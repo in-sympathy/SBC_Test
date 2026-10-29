@@ -9,6 +9,7 @@ It is built for two jobs:
 
 The script:
 - Stresses **CPU**, **memory**, **threads**, and **mutex** performance using [`sysbench`](https://github.com/akopytov/sysbench)
+- Measures **real DRAM bandwidth and latency** with [`tinymembench`](https://github.com/ssvb/tinymembench) — identical routines on every board, so the result isn't contaminated by the compiled `memcpy` or cache behaviour
 - Pins the **CPU frequency governor to `performance`** for the duration of the test (then restores it), so every board runs at full clocks
 - Runs a **network sanity test** against the **LAN gateway** (isolates the board's NIC/Wi-Fi from ISP variance)
 - Collects **telemetry** every second across **all CPU cores** and **all thermal zones** (temperature, peak/mean clock, throttle status, load)
@@ -20,7 +21,7 @@ The script:
   - Active network adapters & IP addresses
   - Storage usage & block device layout
   - Parsed benchmark results, including **per-core (single-thread)**, **all-core**, **oversubscribed**, and a **parallel-scaling ratio**
-  - Memory bandwidth at **1 thread** (subsystem/latency-bound) **and** N threads (aggregate)
+  - **memcpy/cache throughput** (sysbench, at 1 and N threads) *and* **real DRAM bandwidth + latency** (tinymembench)
   - Temperature, observed clock range, **clock-vs-advertised** throttle signal
   - Network packet loss and latency
   - Full `fastfetch` hardware profile
@@ -36,13 +37,15 @@ The original script produced numbers that couldn't be compared honestly across b
 | **CPU governor** | Whatever the distro defaulted to (often `schedutil`/`powersave`) | Pinned to `performance` during the test, restored afterward |
 | **CPU baseline** | Hardcoded 8 threads + a *lighter* prime (360000) → oversubscribed small boards, not comparable | True **single-thread** pass using the **same** prime (600000) as the N/2N passes → clean per-core score |
 | **Scaling** | — | Reports **parallel-scaling ratio** (all-core ÷ single-thread) |
-| **Memory** | One pass at `nproc` threads (conflated core count with memory speed) | Runs at **1 thread** (fair, subsystem) **and** N threads (aggregate) |
+| **Memory** | One sysbench pass, labelled as if it were DRAM bandwidth | sysbench relabelled honestly as a **memcpy/cache** test (1t + Nt); **tinymembench added** for real DRAM bandwidth + latency |
 | **Telemetry clock** | Read only `cpu0` (a little core on big.LITTLE) | Peak/mean across **all cores** |
 | **Telemetry temp** | Read only `thermal_zone0` | Hottest of **all thermal zones** |
 | **Throttle status** | Printed `none` on non-Pi (Pi-only `vcgencmd`) — false confidence | Honest `n/a` on non-Pi, plus **peak clock vs advertised max** as a real signal |
 | **Threads test** | Always `n/a` (parsed the wrong line) | Computes events/sec from events ÷ time |
 | **Network** | Pinged `8.8.8.8` (measured your ISP) | Pings the **LAN gateway** by default (measures the board's link) |
 | **apt full-upgrade** | Always ran (mutated the system mid-benchmark) | **Opt-in** (`ENABLE_APT_UPGRADE=1`) |
+
+> **Why two memory tests?** sysbench `memory` is a memcpy loop that largely lives in cache and depends on the distro's compiled `memcpy` — so it can rank boards backwards (it flattered an iGPU-less board's strong cores over a board with genuinely faster RAM). tinymembench uses its own identical routines and buffers big enough to bypass cache, so it measures the actual memory subsystem — bandwidth *and* latency, which sysbench cannot report at all. Keep both: sysbench shows "as the software sees it," tinymembench shows the hardware truth.
 
 ---
 
@@ -54,10 +57,11 @@ The original script produced numbers that couldn't be compared honestly across b
 - Packages:
   - `sysbench` ≥ 1.0.x
   - `fastfetch`
+  - `build-essential` + `git` — to build tinymembench (auto-installed on first run)
   - `curl`, `lsblk`, `ip`, `df`, `free`, `grep`, `awk`
   - `vcgencmd` — **Raspberry Pi only**, optional. On non-Pi boards the script reads `/sys/class/thermal` and `cpufreq` instead.
 
-The script auto-installs `sysbench` and `fastfetch` if missing.
+The script auto-installs `sysbench` and `fastfetch` if missing, and builds `tinymembench` once (cloned into `./tinymembench/`, reused on later runs).
 
 > **Governor note:** setting the governor needs `sudo` and a writable `cpufreq` interface. If a board clamps or lacks it, the report says `could not set; left as-is` rather than pretending — and the telemetry clock data still shows what actually happened.
 
@@ -93,11 +97,13 @@ Edit the variables at the top of the script:
 | `THREADS_PASS_SECS` | `180` | Duration of the threads test |
 | `MUTEX_PASS_SECS` | `180` | Duration of the mutex test |
 | `CPU_MAX_PRIME` | `600000` | Prime ceiling used by **all** CPU passes (keep identical across boards) |
-| `MEM_TOTAL_SIZE` | `2G` | Data processed per memory subtest (rate is size-independent) |
+| `MEM_TOTAL_SIZE` | `2G` | Data processed per sysbench memory subtest (rate is size-independent) |
 | `MEM_BLOCK_SIZES` | `4K 64K 1M` | Memory block sizes swept |
 | `MEM_ACCESS_MODES` | `seq rnd` | Sequential and random access |
 | `MEM_OPS` | `read write` | Memory operations |
 | `PIN_GOVERNOR` | `1` | Set `performance` during the test and restore after |
+| `ENABLE_TINYMEMBENCH` | `1` | Build & run tinymembench for real DRAM bandwidth + latency |
+| `TMB_DIR` | `./tinymembench` | Where tinymembench is cloned/built |
 | `ENABLE_APT_UPGRADE` | `0` | Set `1` to `apt full-upgrade` before testing (mutates the system) |
 | `PING_TARGET` | `""` (auto) | Empty = default gateway; set an IP/host to override |
 | `PING_COUNT_SECS` | `60` | Duration of the ping test |
@@ -113,9 +119,13 @@ Edit the variables at the top of the script:
 - `Oversub (2Nt)` — should roughly equal all-core on these ARM cores (no SMT); a big gap suggests scheduling oddities.
 - `Parallel scaling` — all-core ÷ single-thread; ideal ≈ core count.
 
-**Memory** — `MiB/sec` (higher is better):
-- *single thread* reflects the memory subsystem / latency.
-- *N threads* reflects aggregate bus bandwidth.
+**Memory (sysbench, MiB/s)** — this is a **memcpy/cache** test, *not* raw DRAM bandwidth. Useful as "how fast the software moves memory," but read it alongside the DRAM section, not instead of it:
+- *single thread* — one core streaming through a buffer.
+- *N threads* — aggregate, across all cores.
+
+**DRAM (tinymembench)** — the real memory test, identical routines on every board:
+- `memcpy` / `memset` / `NEON copy` — sustained one-core DRAM bandwidth (higher is better). This is the number to trust for "which board has faster RAM."
+- `latency, deepest block` — single-random-read latency in ns at the largest buffer (lower is better) = real DRAM access latency. Bandwidth and latency don't always agree: wide high-bandwidth memory often has *higher* latency, so a board can win one and lose the other.
 
 **Temperature / Clock:**
 - `Clock (all cores)` — peak/min/avg observed across every core.
@@ -127,8 +137,9 @@ Edit the variables at the top of the script:
 ---
 
 ## Notes & caveats
-- **Runtime** is roughly 16–20 minutes depending on board speed and the doubled memory sweep.
+- **Runtime** is roughly 18–22 minutes depending on board speed, the doubled sysbench memory sweep, and the tinymembench pass.
+- **First run builds tinymembench** (`git clone` + `make`, ~1 min, needs internet). The binary is cached in `./tinymembench/` and reused on later runs; set `ENABLE_TINYMEMBENCH=0` to skip it.
 - The **governor is restored** on exit even if the script is interrupted (trap on EXIT), along with stopping the telemetry logger.
 - `vcgencmd`-based throttle flags are **Raspberry Pi only**; on other SoCs the clock-vs-advertised signal is the honest substitute.
-- `MEM_TOTAL_SIZE` controls run *length*, not the reported *rate* — changing it doesn't change comparability of MiB/sec figures.
+- `MEM_TOTAL_SIZE` controls run *length*, not the reported *rate* — changing it doesn't change comparability of sysbench MiB/sec figures.
 - The file I/O test is **off by default** because it wears flash; enable it only when you specifically want storage numbers.
