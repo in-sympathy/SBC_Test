@@ -11,6 +11,8 @@
 #   [FIX ] Threads test eps computed from events/time (was always n/a).
 #   [FIX ] Network test pings the LAN gateway by default (isolates board NIC from ISP).
 #   [FIX ] apt full-upgrade is opt-in (was always-on, mutated system mid-benchmark).
+#   [NEW ] tinymembench added for REAL DRAM bandwidth + latency; sysbench memory is
+#          relabeled honestly as a memcpy/cache test (it is NOT raw DRAM bandwidth).
 set -uo pipefail   # NOTE: '-e' intentionally dropped; benchmarks tolerate non-zero exits.
 
 # ---------- Config ----------
@@ -40,6 +42,8 @@ PIN_GOVERNOR=1            # 1 = set 'performance' during test and restore after
 ENABLE_APT_UPGRADE=0      # 1 = run 'apt full-upgrade' before testing (mutates system)
 PING_TARGET=""            # "" = auto (default gateway); set an IP/host to override
 PING_COUNT_SECS=60
+ENABLE_TINYMEMBENCH=1     # 1 = build & run tinymembench for REAL DRAM bandwidth + latency
+TMB_DIR="$SCRIPT_DIR/tinymembench"
 
 # Optional file I/O test (heavy flash wear)
 ENABLE_FILEIO=0
@@ -72,7 +76,6 @@ set_governor() {
     if echo "$want" | sudo tee "$p/scaling_governor" >/dev/null 2>&1; then applied=1; fi
   done
   if [[ "$applied" -eq 1 ]]; then
-    # read back what actually stuck (some boards clamp)
     GOV_SET="$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null || echo "$want")"
   else
     GOV_SET="(could not set; left as-is)"
@@ -111,6 +114,16 @@ if ! command -v fastfetch >/dev/null; then
   rm -f "$LOG_DIR/fastfetch.deb"
 fi
 
+# tinymembench: real DRAM bandwidth + latency (build once if missing)
+if [[ "$ENABLE_TINYMEMBENCH" -eq 1 && ! -x "$TMB_DIR/tinymembench" ]]; then
+  echo "==> Building tinymembench ..."
+  command -v git  >/dev/null || sudo apt install -y git             2>&1 | tee -a "$LOG_DIR/updates.log" || true
+  command -v make >/dev/null || sudo apt install -y build-essential 2>&1 | tee -a "$LOG_DIR/updates.log" || true
+  [[ -d "$TMB_DIR" ]] || git clone --depth 1 https://github.com/ssvb/tinymembench.git "$TMB_DIR" \
+      2>&1 | tee -a "$LOG_DIR/updates.log" || true
+  ( cd "$TMB_DIR" && make ) 2>&1 | tee -a "$LOG_DIR/updates.log" || true
+fi
+
 # Advertised max clock + cluster layout (read once)
 ADV_MAX_HZ=0
 for f in /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq; do
@@ -144,7 +157,6 @@ telemetry() {
       throttled="$(vcgencmd get_throttled 2>/dev/null | awk -F= '{print $2}')"
       [[ -z "$throttled" ]] && throttled="0x0"
     else
-      # hottest thermal zone across the SoC
       tmax=0
       for z in /sys/class/thermal/thermal_zone*/temp; do
         [ -e "$z" ] || continue
@@ -154,7 +166,6 @@ telemetry() {
       done
       temp_c="$(awk -v r="$tmax" 'BEGIN{printf "%.1f", r/1000}')"
     fi
-    # clock: peak and mean across ALL cores
     hz_max=0; hz_sum=0; hz_n=0
     for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
       [ -e "$c" ] || continue
@@ -209,6 +220,15 @@ for t in "${MEM_THREAD_MODES[@]}"; do
     done
   done
 done
+
+# ---------- Real DRAM bandwidth + latency (tinymembench) ----------
+TMB_LOG="$LOG_DIR/tinymembench.log"
+if [[ "$ENABLE_TINYMEMBENCH" -eq 1 && -x "$TMB_DIR/tinymembench" ]]; then
+  echo "[$(date '+%F %T')] ➤ tinymembench (real DRAM bandwidth + latency) ..."
+  "$TMB_DIR/tinymembench" 2>&1 | tee "$TMB_LOG"
+else
+  echo "(tinymembench not built — skipping real DRAM test)" | tee "$TMB_LOG"
+fi
 
 # ---------- Threads test ----------
 echo "[$(date '+%F %T')] ➤ sysbench THREADS (${THREADS_PASS_SECS}s)"
@@ -319,6 +339,14 @@ fi
 MUTEX_TOTAL="$(grep -m1 "total time:" "$LOG_DIR/sysbench_mutex.log" | awk -F: '{print $2}' | xargs || true)"
 MUTEX_AVG="$(grep -m1 "avg:"         "$LOG_DIR/sysbench_mutex.log" | awk -F: '{print $2}' | xargs || true)"
 
+# tinymembench parses (REAL DRAM — identical routines on every board)
+TMB_MEMCPY="$(grep -m1 'standard memcpy' "$TMB_LOG" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)? MB/s' | head -1 || true)"
+TMB_MEMSET="$(grep -m1 'standard memset' "$TMB_LOG" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)? MB/s' | head -1 || true)"
+TMB_NEON="$(grep -m1 -E 'NEON LDP/STP copy +:' "$TMB_LOG" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)? MB/s' | head -1 || true)"
+TMB_LAT_LINE="$(grep -E '^[[:space:]]*[0-9]+[[:space:]]*:' "$TMB_LOG" 2>/dev/null | tail -1 || true)"
+TMB_LAT_BLOCK="$(echo "$TMB_LAT_LINE" | awk -F: '{print $1}' | xargs || true)"
+TMB_LAT_NS="$(echo "$TMB_LAT_LINE" | sed -E 's/.*:[[:space:]]*([0-9.]+)[[:space:]]*ns.*/\1/' || true)"
+
 # Memory results (robust rate extraction), grouped by thread count
 mem_block() {
   local tt="$1" f b rate
@@ -371,13 +399,22 @@ LOSS_PCT="$(echo "$PING_SUMMARY" | grep -m1 "packet loss" | sed -E 's/.* ([0-9]+
   printf "Oversub     (%dt) : %s\n" "$((THREADS*2))" "${CPU_2NT_EPS:-n/a}"
   printf "Parallel scaling   : %sx  (ideal ~= %s)\n" "${SCALING}" "$THREADS"
   echo
-  echo "----- MEMORY TEST RESULTS (MiB/sec, higher=better) -----"
-  echo " [single thread — memory subsystem / latency-bound]"
+  echo "----- MEMORY: memcpy / cache throughput (sysbench, MiB/sec) -----"
+  echo " NOTE: this is a memcpy loop through cache + the libc memcpy — NOT raw DRAM"
+  echo "       bandwidth. See the DRAM (tinymembench) section below for real numbers."
+  echo " [single thread]"
   mem_block 1
   if [[ "$THREADS" -gt 1 ]]; then
-    echo " [${THREADS} threads — aggregate bandwidth]"
+    echo " [${THREADS} threads — aggregate]"
     mem_block "$THREADS"
   fi
+  echo
+  echo "----- DRAM: real bandwidth + latency (tinymembench, single-thread) -----"
+  printf " memcpy (copy)          : %s\n" "${TMB_MEMCPY:-n/a}"
+  printf " memset (fill)          : %s\n" "${TMB_MEMSET:-n/a}"
+  printf " NEON LDP/STP copy      : %s\n" "${TMB_NEON:-n/a}"
+  printf " latency, deepest block : %s ns @ %s bytes (single random read)\n" "${TMB_LAT_NS:-n/a}" "${TMB_LAT_BLOCK:-?}"
+  echo "   (bandwidth higher=better, latency lower=better; identical routines every board)"
   echo
   echo "----- THREADS TEST RESULTS -----"
   printf "Events/sec: %s\n" "${TH_EPS:-n/a}"
@@ -387,30 +424,4 @@ LOSS_PCT="$(echo "$PING_SUMMARY" | grep -m1 "packet loss" | sed -E 's/.* ([0-9]+
   echo
   echo "----- TEMPERATURE / CLOCK SUMMARY -----"
   printf "Max Temp: %.1f°C | Avg Temp: %.1f°C\n" "${MAXT:-0}" "${AVGT:-0}"
-  printf "Clock (all cores): peak %.0f Hz | min %.0f Hz | avg %.0f Hz\n" "${MAXHZ:-0}" "${MINHZ:-0}" "${AVGHZ:-0}"
-  echo "Clock vs advertised: ${CLOCK_NOTE}"
-  echo "Throttling: $THROTTLING"
-  echo
-  echo "----- NETWORK TEST RESULTS (target: ${PING_TARGET}) -----"
-  [[ -n "$PING_SUMMARY" ]] && echo "$PING_SUMMARY" || echo "(no ping summary parsed)"
-  echo
-  echo "----- fastfetch (hardware snapshot) -----"
-  cat "$LOG_DIR/fastfetch.log" 2>/dev/null || echo "(fastfetch log missing)"
-  echo "==========================================================="
-} | tee "$REPORT" >/dev/null
-
-# ---------- Colorized quick summary ----------
-cecho cyan "=== QUICK STATUS ==="
-[[ $PASS_TEMP -eq 1 ]] && cecho green "Thermals: OK (max ${MAXT:-0}°C)" || cecho red "Thermals: HOT! (max ${MAXT:-0}°C)"
-if [[ "$THROT_KNOWN" -eq 1 ]]; then
-  [[ $PASS_THROT -eq 1 ]] && cecho green "Throttling: none" || cecho red "Throttling flags: $THROTTLING"
-else
-  cecho yellow "Throttling: $THROTTLING"
-fi
-[[ $PASS_PING -eq 1 ]] && cecho green "Network: OK (loss ${LOSS_PCT}%)" || cecho yellow "Network loss: ${LOSS_PCT}%"
-cecho cyan "Governor during test: ${GOV_SET}"
-echo
-cecho cyan "Full report saved to: $REPORT"
-echo
-
-echo "[$(date '+%F %T')] ➤ All done! Logs in $LOG_DIR"
+  printf "Clock (all cores): peak %.0f Hz | min %.0f Hz | avg %.0f Hz\n" "${MAXHZ:-0}" "${MINHZ:-0}"
