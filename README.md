@@ -85,11 +85,11 @@ sudo ./SBC_Test.sh -l       # long burn-in soak (~15 min)
 ### Modes
 | Flag | Profile | Runtime | Use when |
 |------|---------|---------|----------|
-| `-q`, `--quick` | Fast benchmark (**default**) | ~9–11 min | Comparing boards — same metrics, shorter thermal soak |
-| `-l`, `--long` | Long burn-in | ~15 min | Post-repair stability — extended CPU soak catches slow thermal creep |
+| `-q`, `--quick` | Fast benchmark (**default**) | ~7–9 min | Comparing boards — shorter soak; skips the redundant sysbench memory sweep |
+| `-l`, `--long` | Long burn-in | ~15 min | Post-repair stability — extended CPU soak + full sysbench memory sweep |
 | `-h`, `--help` | — | — | Print options and exit |
 
-Both modes run the same tests and produce the same metrics; `-l` only lengthens the sustained CPU soak.
+Quick mode shortens the sustained CPU soak and skips the sysbench memory sweep (redundant with tinymembench); `-l` runs the full set. **Both profiles still run tinymembench**, so you always get real DRAM bandwidth + latency.
 
 Full report:
 ```bash
@@ -121,7 +121,7 @@ Edit the variables at the top of the script:
 | `PING_COUNT_SECS` | `60` | Duration of the ping test |
 | `ENABLE_FILEIO` | `0` | Set `1` to run the flash-wearing file I/O test |
 
-> The durations above are the **quick** (`-q`, default) profile. Passing **`-l`** overrides the five `*_PASS_SECS` values with the long burn-in profile (60 / 300 / 120 / 180 / 180 s). Edit the values here to tune the quick profile.
+> The durations above are the **quick** (`-q`, default) profile. Passing **`-l`** overrides the five `*_PASS_SECS` values with the long burn-in profile (60 / 300 / 120 / 180 / 180 s) **and** runs the full sysbench memory sweep (quick skips it). Edit the values here to tune the quick profile.
 
 ---
 
@@ -133,7 +133,7 @@ Edit the variables at the top of the script:
 - `Oversub (2Nt)` — should roughly equal all-core on these ARM cores (no SMT); a big gap suggests scheduling oddities.
 - `Parallel scaling` — all-core ÷ single-thread; ideal ≈ core count.
 
-**Memory (sysbench, MiB/s)** — this is a **memcpy/cache** test, *not* raw DRAM bandwidth. Useful as "how fast the software moves memory," but read it alongside the DRAM section, not instead of it:
+**Memory (sysbench, MiB/s)** — a **memcpy/cache** test, *not* raw DRAM bandwidth. **Only runs in `-l`** (quick mode skips it as redundant with tinymembench). Useful as "how fast the software moves memory":
 - *single thread* — one core streaming through a buffer.
 - *N threads* — aggregate, across all cores.
 
@@ -151,7 +151,7 @@ Edit the variables at the top of the script:
 ---
 
 ## Notes & caveats
-- **Runtime** is ~9–11 minutes in the default quick (`-q`) profile, ~15 minutes with `-l` (long burn-in). Both produce identical metrics; `-l` only extends the sustained CPU soak.
+- **Runtime** is ~7–9 minutes in the default quick (`-q`) profile, ~15 minutes with `-l` (long burn-in). Quick shortens the CPU soak and skips the sysbench memory sweep; both profiles still run tinymembench, so DRAM bandwidth + latency is always captured.
 - **First run builds tinymembench** (`git clone` + `make`, ~1 min, needs internet). The binary is cached in `./tinymembench/` and reused on later runs; set `ENABLE_TINYMEMBENCH=0` to skip it.
 - The **governor is restored** on exit even if the script is interrupted (trap on EXIT), along with stopping the telemetry logger.
 - `vcgencmd`-based throttle flags are **Raspberry Pi only**; on other SoCs the clock-vs-advertised signal is the honest substitute.
