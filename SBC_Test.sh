@@ -13,7 +13,8 @@
 #   [FIX ] apt full-upgrade is opt-in (was always-on, mutated system mid-benchmark).
 #   [NEW ] tinymembench added for REAL DRAM bandwidth + latency; sysbench memory is
 #          relabeled honestly as a memcpy/cache test (it is NOT raw DRAM bandwidth).
-#   [PERF] Fast benchmark profile by default (~9-11 min); -l for the long soak, -h for help.
+#   [PERF] Fast benchmark profile by default (~7-9 min); -l for the long soak, -h for help.
+#          Quick mode skips the (redundant) sysbench memory sweep; tinymembench covers memory.
 set -uo pipefail   # NOTE: '-e' intentionally dropped; benchmarks tolerate non-zero exits.
 
 # ---------- CLI ----------
@@ -21,10 +22,11 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [-q | -l] [-h]
 
-  -q, --quick   Fast benchmark profile (~9-11 min) — DEFAULT. Same metrics as -l,
-                just a shorter thermal soak. Best for comparing boards.
-  -l, --long    Long burn-in profile (~15 min). Extended sustained CPU soak for
-                post-repair stability / slow-throttle detection.
+  -q, --quick   Fast benchmark profile (~7-9 min) — DEFAULT. Shorter thermal soak and
+                skips the redundant sysbench memory sweep (tinymembench still measures
+                real DRAM). Best for comparing boards.
+  -l, --long    Long burn-in profile (~15 min). Extended sustained CPU soak plus the
+                full sysbench memory sweep. For post-repair stability / slow throttle.
   -h, --help    Show this help and exit.
 
 Run with sudo so the CPU governor can be pinned (fair results).
@@ -64,6 +66,10 @@ if [[ "$MODE" == "long" ]]; then
   THREADS_PASS_SECS=180
   MUTEX_PASS_SECS=180
 fi
+
+# sysbench memory is a memcpy/cache test, now redundant with tinymembench (real DRAM),
+# so quick mode skips it; the long burn-in keeps it for completeness.
+if [[ "$MODE" == "long" ]]; then ENABLE_SYSBENCH_MEM=1; else ENABLE_SYSBENCH_MEM=0; fi
 
 # Same prime ceiling for ALL cpu passes so 1t / Nt / 2Nt are directly comparable
 CPU_MAX_PRIME=600000
@@ -243,25 +249,30 @@ echo "[$(date '+%F %T')] ➤ sysbench CPU $((THREADS*2)) threads (${CPU_2NT_PASS
 sysbench cpu --cpu-max-prime=$CPU_MAX_PRIME --threads="$((THREADS*2))" --time=$CPU_2NT_PASS_SECS --events=0 --verbosity=5 run \
   2>&1 | tee "$LOG_DIR/sysbench_cpu_2nt.log"
 
-# ---------- Memory tests (1 thread + N threads) ----------
-echo "[$(date '+%F %T')] ➤ sysbench MEMORY sweep (threads: ${MEM_THREAD_MODES[*]})"
-for t in "${MEM_THREAD_MODES[@]}"; do
-  for bs in "${MEM_BLOCK_SIZES[@]}"; do
-    for mode in "${MEM_ACCESS_MODES[@]}"; do
-      for op in "${MEM_OPS[@]}"; do
-        name="mem_${op}_${mode}_${bs}_${t}t"
-        echo "[$(date '+%F %T')]  • $name total=$MEM_TOTAL_SIZE threads=$t"
-        sysbench memory \
-          --threads="$t" --time=0 --events=0 --verbosity=5 \
-          --memory-total-size="$MEM_TOTAL_SIZE" \
-          --memory-block-size="$bs" \
-          --memory-access-mode="$mode" \
-          --memory-oper="$op" \
-          run 2>&1 | tee "$LOG_DIR/sysbench_${name}.log"
+# ---------- Memory tests (sysbench memcpy/cache sweep — skipped in quick mode) ----------
+if [[ "$ENABLE_SYSBENCH_MEM" -eq 1 ]]; then
+  echo "[$(date '+%F %T')] ➤ sysbench MEMORY sweep (threads: ${MEM_THREAD_MODES[*]})"
+  for t in "${MEM_THREAD_MODES[@]}"; do
+    for bs in "${MEM_BLOCK_SIZES[@]}"; do
+      for mode in "${MEM_ACCESS_MODES[@]}"; do
+        for op in "${MEM_OPS[@]}"; do
+          name="mem_${op}_${mode}_${bs}_${t}t"
+          echo "[$(date '+%F %T')]  • $name total=$MEM_TOTAL_SIZE threads=$t"
+          sysbench memory \
+            --threads="$t" --time=0 --events=0 --verbosity=5 \
+            --memory-total-size="$MEM_TOTAL_SIZE" \
+            --memory-block-size="$bs" \
+            --memory-access-mode="$mode" \
+            --memory-oper="$op" \
+            run 2>&1 | tee "$LOG_DIR/sysbench_${name}.log"
+        done
       done
     done
   done
-done
+else
+  echo "[$(date '+%F %T')] ➤ sysbench MEMORY sweep skipped (quick mode; tinymembench covers memory)"
+  rm -f "$LOG_DIR"/sysbench_mem_*.log 2>/dev/null || true   # clear stale logs so the report shows 'skipped'
+fi
 
 # ---------- Real DRAM bandwidth + latency (tinymembench) ----------
 TMB_LOG="$LOG_DIR/tinymembench.log"
@@ -443,13 +454,18 @@ LOSS_PCT="$(echo "$PING_SUMMARY" | grep -m1 "packet loss" | sed -E 's/.* ([0-9]+
   printf "Parallel scaling   : %sx  (ideal ~= %s)\n" "${SCALING}" "$THREADS"
   echo
   echo "----- MEMORY: memcpy / cache throughput (sysbench, MiB/sec) -----"
-  echo " NOTE: this is a memcpy loop through cache + the libc memcpy — NOT raw DRAM"
-  echo "       bandwidth. See the DRAM (tinymembench) section below for real numbers."
-  echo " [single thread]"
-  mem_block 1
-  if [[ "$THREADS" -gt 1 ]]; then
-    echo " [${THREADS} threads — aggregate]"
-    mem_block "$THREADS"
+  if [[ "$ENABLE_SYSBENCH_MEM" -eq 1 ]]; then
+    echo " NOTE: this is a memcpy loop through cache + the libc memcpy — NOT raw DRAM"
+    echo "       bandwidth. See the DRAM (tinymembench) section below for real numbers."
+    echo " [single thread]"
+    mem_block 1
+    if [[ "$THREADS" -gt 1 ]]; then
+      echo " [${THREADS} threads — aggregate]"
+      mem_block "$THREADS"
+    fi
+  else
+    echo " skipped in quick mode (redundant with tinymembench) — run with -l to include it."
+    echo " See the DRAM (tinymembench) section below for real memory numbers."
   fi
   echo
   echo "----- DRAM: real bandwidth + latency (tinymembench, single-thread) -----"
