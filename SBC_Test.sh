@@ -13,24 +13,63 @@
 #   [FIX ] apt full-upgrade is opt-in (was always-on, mutated system mid-benchmark).
 #   [NEW ] tinymembench added for REAL DRAM bandwidth + latency; sysbench memory is
 #          relabeled honestly as a memcpy/cache test (it is NOT raw DRAM bandwidth).
+#   [PERF] Fast benchmark profile by default (~9-11 min); -l for the long soak, -h for help.
 set -uo pipefail   # NOTE: '-e' intentionally dropped; benchmarks tolerate non-zero exits.
+
+# ---------- CLI ----------
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [-q | -l] [-h]
+
+  -q, --quick   Fast benchmark profile (~9-11 min) — DEFAULT. Same metrics as -l,
+                just a shorter thermal soak. Best for comparing boards.
+  -l, --long    Long burn-in profile (~15 min). Extended sustained CPU soak for
+                post-repair stability / slow-throttle detection.
+  -h, --help    Show this help and exit.
+
+Run with sudo so the CPU governor can be pinned (fair results).
+Finer knobs (memory size, apt-upgrade, tinymembench, file I/O) are at the top
+of the script.
+EOF
+}
+
+MODE="quick"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -q|--quick) MODE="quick" ;;
+    -l|--long)  MODE="long"  ;;
+    -h|--help)  usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
+  esac
+  shift
+done
 
 # ---------- Config ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 LOG_DIR="$SCRIPT_DIR/Logs"
 THREADS="$(nproc --all)"
 
-# Durations (seconds)
-SINGLE_PASS_SECS=60       # single-thread per-core pass
-CPU_PASS_SECS=300         # all-core / oversubscribed passes
-THREADS_PASS_SECS=180
-MUTEX_PASS_SECS=180
+# ---------- Run profile ----------
+# Durations (seconds). Default = quick (-q); -l switches to the long burn-in soak.
+SINGLE_PASS_SECS=30       # single-thread per-core pass (eps stabilises in seconds)
+CPU_PASS_SECS=120         # all-core pass — doubles as the thermal heat-soak
+CPU_2NT_PASS_SECS=60      # oversubscribed pass — redundancy check, needs no soak
+THREADS_PASS_SECS=60
+MUTEX_PASS_SECS=60
+
+if [[ "$MODE" == "long" ]]; then
+  SINGLE_PASS_SECS=60
+  CPU_PASS_SECS=300       # long sustained soak to catch slow thermal creep
+  CPU_2NT_PASS_SECS=120
+  THREADS_PASS_SECS=180
+  MUTEX_PASS_SECS=180
+fi
 
 # Same prime ceiling for ALL cpu passes so 1t / Nt / 2Nt are directly comparable
 CPU_MAX_PRIME=600000
 
 # Memory sweep
-MEM_TOTAL_SIZE="2G"       # processed per subtest; rate (MiB/sec) is size-independent
+MEM_TOTAL_SIZE="1G"       # processed per subtest; rate (MiB/sec) is size-independent
 MEM_BLOCK_SIZES=("4K" "64K" "1M")
 MEM_ACCESS_MODES=("seq" "rnd")
 MEM_OPS=("read" "write")
@@ -76,6 +115,7 @@ set_governor() {
     if echo "$want" | sudo tee "$p/scaling_governor" >/dev/null 2>&1; then applied=1; fi
   done
   if [[ "$applied" -eq 1 ]]; then
+    # read back what actually stuck (some boards clamp)
     GOV_SET="$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null || echo "$want")"
   else
     GOV_SET="(could not set; left as-is)"
@@ -157,6 +197,7 @@ telemetry() {
       throttled="$(vcgencmd get_throttled 2>/dev/null | awk -F= '{print $2}')"
       [[ -z "$throttled" ]] && throttled="0x0"
     else
+      # hottest thermal zone across the SoC
       tmax=0
       for z in /sys/class/thermal/thermal_zone*/temp; do
         [ -e "$z" ] || continue
@@ -166,6 +207,7 @@ telemetry() {
       done
       temp_c="$(awk -v r="$tmax" 'BEGIN{printf "%.1f", r/1000}')"
     fi
+    # clock: peak and mean across ALL cores
     hz_max=0; hz_sum=0; hz_n=0
     for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
       [ -e "$c" ] || continue
@@ -197,8 +239,8 @@ echo "[$(date '+%F %T')] ➤ sysbench CPU ${THREADS} threads (${CPU_PASS_SECS}s)
 sysbench cpu --cpu-max-prime=$CPU_MAX_PRIME --threads="$THREADS" --time=$CPU_PASS_SECS --events=0 --verbosity=5 run \
   2>&1 | tee "$LOG_DIR/sysbench_cpu_nt.log"
 
-echo "[$(date '+%F %T')] ➤ sysbench CPU $((THREADS*2)) threads (${CPU_PASS_SECS}s)"
-sysbench cpu --cpu-max-prime=$CPU_MAX_PRIME --threads="$((THREADS*2))" --time=$CPU_PASS_SECS --events=0 --verbosity=5 run \
+echo "[$(date '+%F %T')] ➤ sysbench CPU $((THREADS*2)) threads (${CPU_2NT_PASS_SECS}s)"
+sysbench cpu --cpu-max-prime=$CPU_MAX_PRIME --threads="$((THREADS*2))" --time=$CPU_2NT_PASS_SECS --events=0 --verbosity=5 run \
   2>&1 | tee "$LOG_DIR/sysbench_cpu_2nt.log"
 
 # ---------- Memory tests (1 thread + N threads) ----------
@@ -381,6 +423,7 @@ LOSS_PCT="$(echo "$PING_SUMMARY" | grep -m1 "packet loss" | sed -E 's/.* ([0-9]+
   echo "CPU cores: $THREADS"
   echo "Clusters:  ${CLUSTERS:-n/a}"
   echo "Governor:  during test = ${GOV_SET}   (available: ${GOV_AVAIL})"
+  echo "Profile:   ${MODE}"
   echo "Memory:    $MEM_HUMAN"
   echo "Swap:      $SWAP_HUMAN"
   echo
